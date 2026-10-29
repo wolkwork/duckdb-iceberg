@@ -8,6 +8,9 @@
 #             WOLK_EXTENSIONS_S3_KEY       secret access key
 #   variables WOLK_EXTENSIONS_BUCKET       bucket name, optionally followed by a path prefix (bucket/prefix)
 #             WOLK_EXTENSIONS_S3_PROVIDER  optional rclone S3 provider (AWS by default, R2 endpoints are detected)
+#             WOLK_EXTENSIONS_S3_REGION    optional region the endpoint signs for (e.g. nl-ams for Scaleway)
+#             WOLK_EXTENSIONS_S3_ACL       optional canned ACL for uploaded objects (public-read when the bucket
+#                                          is served through a CDN that only serves public objects)
 # Without the secrets the binaries are built and the upload is only rehearsed.
 #
 name: Wolk Extension Distribution
@@ -76,6 +79,8 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.WOLK_EXTENSIONS_S3_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.WOLK_EXTENSIONS_S3_KEY }}
           S3_PROVIDER: ${{ vars.WOLK_EXTENSIONS_S3_PROVIDER }}
+          RCLONE_S3_REGION: ${{ vars.WOLK_EXTENSIONS_S3_REGION }}
+          RCLONE_S3_ACL: ${{ vars.WOLK_EXTENSIONS_S3_ACL }}
           DUCKDB_DEPLOY_SCRIPT_MODE: ${{ secrets.WOLK_EXTENSIONS_S3_KEY != '' && 'for_real' || '' }}
         run: |
           bash duckdb/scripts/extension-upload-single.sh "$EXTENSION_NAME" "${GITHUB_SHA::10}" "$DUCKDB_VERSION" \
