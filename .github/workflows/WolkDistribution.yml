@@ -1,0 +1,82 @@
+#
+# Builds the extension against a released DuckDB and publishes it to the Wolk extension repository, so stock DuckDB
+# clients can install it with INSTALL ... FROM '<repository url>' until the changes are available upstream.
+#
+# Configure in the repository settings:
+#   secrets   WOLK_EXTENSIONS_S3_ENDPOINT  S3 API endpoint of the bucket (for R2: https://<account>.r2.cloudflarestorage.com)
+#             WOLK_EXTENSIONS_S3_ID        access key id with write access to the bucket
+#             WOLK_EXTENSIONS_S3_KEY       secret access key
+#   variables WOLK_EXTENSIONS_BUCKET       bucket name, optionally followed by a path prefix (bucket/prefix)
+#             WOLK_EXTENSIONS_S3_PROVIDER  optional rclone S3 provider (AWS by default, R2 endpoints are detected)
+# Without the secrets the binaries are built and the upload is only rehearsed.
+#
+name: Wolk Extension Distribution
+on:
+  push:
+    branches:
+      - 'dist/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@969bc76276acec1c0a3922ff500d2ec3a1a3b037 # v2.0-cyanoptera 2026-10-01 pin
+    with:
+      extension_name: iceberg
+      # Extensions only load into the exact DuckDB release they were built for
+      duckdb_version: v2.0.0
+      ci_tools_version: 969bc76276acec1c0a3922ff500d2ec3a1a3b037 # v2.0-cyanoptera 2026-10-01 pin
+      vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+      exclude_archs: 'windows_amd64_mingw'
+      opt_in_archs: 'linux_amd64_musl;linux_arm64_musl;windows_arm64'
+      extra_toolchains: 'python3'
+      test_config: '{"test_env_variables": {"T": "\"test/*\" \"exclude:*.test_slow\""}}'
+
+  deploy:
+    name: Deploy (${{ matrix.duckdb_arch }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        duckdb_arch: [linux_amd64, linux_arm64, linux_amd64_musl, linux_arm64_musl, osx_amd64, osx_arm64,
+                      windows_amd64, windows_arm64, wasm_mvp, wasm_eh, wasm_threads]
+    env:
+      EXTENSION_NAME: iceberg
+      DUCKDB_VERSION: v2.0.0
+    steps:
+      - name: Checkout the DuckDB upload script
+        uses: actions/checkout@v5
+        with:
+          repository: duckdb/duckdb
+          ref: v2.0.0
+          path: duckdb
+          sparse-checkout: scripts
+
+      - name: Download the extension binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.EXTENSION_NAME }}-${{ env.DUCKDB_VERSION }}-extension-${{ matrix.duckdb_arch }}
+          path: /tmp/extension
+
+      - name: Install brotli
+        if: startsWith(matrix.duckdb_arch, 'wasm')
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq brotli
+
+      # Writes <bucket>/v2.0.0/<arch>/<extension>.duckdb_extension.gz (.wasm for DuckDB-Wasm), the layout INSTALL
+      # expects, plus a copy under <bucket>/<extension>/<commit>/ to pin or roll back to. The binaries are unsigned:
+      # only DuckDB can sign with the keys DuckDB trusts, so clients need allow_unsigned_extensions.
+      - name: Upload to the Wolk extension repository
+        env:
+          AWS_ENDPOINT_URL: ${{ secrets.WOLK_EXTENSIONS_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.WOLK_EXTENSIONS_S3_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.WOLK_EXTENSIONS_S3_KEY }}
+          S3_PROVIDER: ${{ vars.WOLK_EXTENSIONS_S3_PROVIDER }}
+          DUCKDB_DEPLOY_SCRIPT_MODE: ${{ secrets.WOLK_EXTENSIONS_S3_KEY != '' && 'for_real' || '' }}
+        run: |
+          bash duckdb/scripts/extension-upload-single.sh "$EXTENSION_NAME" "${GITHUB_SHA::10}" "$DUCKDB_VERSION" \
+            "${{ matrix.duckdb_arch }}" "${{ vars.WOLK_EXTENSIONS_BUCKET || 'unset-bucket' }}" true true
